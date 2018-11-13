@@ -1,125 +1,97 @@
-//  OpenShift sample Node application
-var express = require('express'),
-    app     = express(),
-    morgan  = require('morgan');
-    
-Object.assign=require('object-assign')
+﻿//@ts-check
 
-app.engine('html', require('ejs').renderFile);
-app.use(morgan('combined'))
+var express = require('express');
+var http = require('http');
+var path = require('path');
+var socketIO = require('socket.io');
 
-var port = process.env.PORT || process.env.OPENSHIFT_NODEJS_PORT || 8080,
-    ip   = process.env.IP   || process.env.OPENSHIFT_NODEJS_IP || '0.0.0.0',
-    mongoURL = process.env.OPENSHIFT_MONGODB_DB_URL || process.env.MONGO_URL,
-    mongoURLLabel = "";
+var app = express();
+var server = http.Server(app);
+var io = socketIO(server);
 
-if (mongoURL == null) {
-  var mongoHost, mongoPort, mongoDatabase, mongoPassword, mongoUser;
-  // If using plane old env vars via service discovery
-  if (process.env.DATABASE_SERVICE_NAME) {
-    var mongoServiceName = process.env.DATABASE_SERVICE_NAME.toUpperCase();
-    mongoHost = process.env[mongoServiceName + '_SERVICE_HOST'];
-    mongoPort = process.env[mongoServiceName + '_SERVICE_PORT'];
-    mongoDatabase = process.env[mongoServiceName + '_DATABASE'];
-    mongoPassword = process.env[mongoServiceName + '_PASSWORD'];
-    mongoUser = process.env[mongoServiceName + '_USER'];
 
-  // If using env vars from secret from service binding  
-  } else if (process.env.database_name) {
-    mongoDatabase = process.env.database_name;
-    mongoPassword = process.env.password;
-    mongoUser = process.env.username;
-    var mongoUriParts = process.env.uri && process.env.uri.split("//");
-    if (mongoUriParts.length == 2) {
-      mongoUriParts = mongoUriParts[1].split(":");
-      if (mongoUriParts && mongoUriParts.length == 2) {
-        mongoHost = mongoUriParts[0];
-        mongoPort = mongoUriParts[1];
-      }
-    }
-  }
+var gamePath = __dirname + '/static';
+app.set('port', 8080);
+app.use('/static', express.static(gamePath));
 
-  if (mongoHost && mongoPort && mongoDatabase) {
-    mongoURLLabel = mongoURL = 'mongodb://';
-    if (mongoUser && mongoPassword) {
-      mongoURL += mongoUser + ':' + mongoPassword + '@';
-    }
-    // Provide UI label that excludes user id and pw
-    mongoURLLabel += mongoHost + ':' + mongoPort + '/' + mongoDatabase;
-    mongoURL += mongoHost + ':' +  mongoPort + '/' + mongoDatabase;
-  }
+// Routing
+app.get('/', function (request, response) {
+	response.sendFile(path.join(gamePath, 'TitleScreen.html'));
+});
+app.get('/index.html', function (request, response) {
+	response.sendFile(path.join(gamePath, 'index.html'));
+});
+// Starts the server.
+server.listen(8080,'0.0.0.0', function () {
+	console.log('Starting server on port 8080');
+});
+
+
+
+
+var players = {};
+io.on('connection', function (socket)
+{
+	socket.on('message', function (data)
+	{
+		console.log(data);
+	});
+	socket.on('new player', function ()
+	{
+		players[socket.id] =
+		{
+			x: 300,
+			y: 300,
+			direction: 0,
+			speed:0,
+		};
+	});
+	socket.on('movement', function (data) {
+		var player = players[socket.id] || {};
+		if (data.left) {
+			player.direction -= 5 * 6.28 / 360;
+			while (player.direction < -3.14)
+				player.direction += 6.28;
+		}
+		if (data.up) {
+			player.speed += 1;
+			if (player.speed > 100)
+				player.speed = 100;
+		}
+		if (data.right) {
+			player.direction += 5 * 6.28 / 360;
+			while (player.direction > 3.14)
+				player.direction -= 6.28;
+		}
+		if (data.down) {
+			player.speed -= 1;
+			if (player.speed < 0)
+				player.speed = 0;
+		}
+	});
+});
+
+var updatePlayer = function (player) {
+	let x = Math.cos(player.direction);
+	let y = Math.sin(player.direction);
+
+	player.x += player.speed / 20 * x;
+	player.y += player.speed / 20 * y;
+
+	if (player.x < 0)
+		player.x = 0;
+	if (player.x > 800)
+		player.x = 800;
+	if (player.y < 0)
+		player.y = 0;
+	if (player.y > 600)
+		player.y = 600;
 }
-var db = null,
-    dbDetails = new Object();
 
-var initDb = function(callback) {
-  if (mongoURL == null) return;
-
-  var mongodb = require('mongodb');
-  if (mongodb == null) return;
-
-  mongodb.connect(mongoURL, function(err, conn) {
-    if (err) {
-      callback(err);
-      return;
-    }
-
-    db = conn;
-    dbDetails.databaseName = db.databaseName;
-    dbDetails.url = mongoURLLabel;
-    dbDetails.type = 'MongoDB';
-
-    console.log('Connected to MongoDB at: %s', mongoURL);
-  });
-};
-
-app.get('/', function (req, res) {
-  // try to initialize the db on every request if it's not already
-  // initialized.
-  if (!db) {
-    initDb(function(err){});
-  }
-  if (db) {
-    var col = db.collection('counts');
-    // Create a document with request IP and current time of request
-    col.insert({ip: req.ip, date: Date.now()});
-    col.count(function(err, count){
-      if (err) {
-        console.log('Error running count. Message:\n'+err);
-      }
-      res.render('index.html', { pageCountMessage : count, dbInfo: dbDetails });
-    });
-  } else {
-    res.render('index.html', { pageCountMessage : null});
-  }
-});
-
-app.get('/pagecount', function (req, res) {
-  // try to initialize the db on every request if it's not already
-  // initialized.
-  if (!db) {
-    initDb(function(err){});
-  }
-  if (db) {
-    db.collection('counts').count(function(err, count ){
-      res.send('{ pageCount: ' + count + '}');
-    });
-  } else {
-    res.send('{ pageCount: -1 }');
-  }
-});
-
-// error handling
-app.use(function(err, req, res, next){
-  console.error(err.stack);
-  res.status(500).send('Something bad happened!');
-});
-
-initDb(function(err){
-  console.log('Error connecting to Mongo. Message:\n'+err);
-});
-
-app.listen(port, ip);
-console.log('Server running on http://%s:%s', ip, port);
-
-module.exports = app ;
+setInterval(function () {
+	for (var player in players) {
+		var obj = players[player];
+		updatePlayer(obj);
+	}
+	io.sockets.emit('state', players);
+}, 1000 / 60);
